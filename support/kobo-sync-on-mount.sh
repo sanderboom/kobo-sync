@@ -1,11 +1,15 @@
 #!/bin/bash
 # Runs kobo sync when Kobo is mounted
-# Called by launchd when /Volumes/KOBOeReader appears
-
-set -e
+# Called by launchd when /Volumes/KOBOeReader changes (mount or unmount)
 
 KOBO_SYNC_DIR="{{KOBO_SYNC_DIR}}"
+KOBO_DB="/Volumes/KOBOeReader/.kobo/KoboReader.sqlite"
 LOG_FILE="$HOME/.kobo-sync/sync.log"
+
+# Only proceed if Kobo is actually mounted
+if [[ ! -f "$KOBO_DB" ]]; then
+  exit 0
+fi
 
 # Source shell profile to get mise/rbenv/etc
 export PATH="$HOME/.local/bin:$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
