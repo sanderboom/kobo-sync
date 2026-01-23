@@ -6,17 +6,30 @@ KOBO_SYNC_DIR="{{KOBO_SYNC_DIR}}"
 KOBO_DB="/Volumes/KOBOeReader/.kobo/KoboReader.sqlite"
 LOG_FILE="$HOME/.kobo-sync/sync.log"
 
+mkdir -p "$(dirname "$LOG_FILE")"
+
+echo "$(date): Script triggered" >> "$LOG_FILE"
+
+# Wait for Kobo to be fully mounted (up to 10 seconds)
+TIMEOUT=10
+WAITED=0
+while [[ ! -f "$KOBO_DB" ]] && [[ $WAITED -lt $TIMEOUT ]]; do
+  sleep 1
+  WAITED=$((WAITED + 1))
+done
+
 # Only proceed if Kobo is actually mounted
 if [[ ! -f "$KOBO_DB" ]]; then
+  echo "$(date): Kobo DB not found after ${WAITED}s, exiting (unmount or timeout)" >> "$LOG_FILE"
   exit 0
 fi
+
+echo "$(date): Kobo DB found after ${WAITED}s, starting sync..." >> "$LOG_FILE"
 
 # Source shell profile to get mise/rbenv/etc
 export PATH="$HOME/.local/bin:$HOME/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 cd "$KOBO_SYNC_DIR"
-
-echo "$(date): Kobo mounted, starting sync..." >> "$LOG_FILE"
 
 # Use mise exec if available, otherwise try direct bundle
 if command -v mise &> /dev/null; then
