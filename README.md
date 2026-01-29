@@ -16,17 +16,32 @@ Kobo tracks reading sessions in its `AnalyticsEvents` table, but this data gets 
 bundle install
 ```
 
+## Prerequisites
+
+### Analytics must be enabled on the Kobo
+
+The Kobo only generates `OpenContent`/`LeaveContent` events when analytics tracking is enabled. The `PrivacyPermissions` field in the Kobo's database must be populated — if it's empty, no reading events will be recorded.
+
+This is typically set during initial device setup via Kobo's servers. If you set up your Kobo with a custom `api_endpoint` (e.g. pointing to BookLore), the privacy consent flow may have been skipped. To fix this:
+
+1. Connect your Kobo via USB
+2. In `.kobo/Kobo/Kobo eReader.conf`, temporarily set `api_endpoint=https://storeapi.kobo.com`
+3. Eject the Kobo, let it sync with Kobo's servers, and accept the privacy/analytics consent
+4. Reconnect via USB and restore the BookLore `api_endpoint`
+
+Note: if you factory reset or sign out of the device, you'll need to repeat this.
+
 ## First-Time Setup
 
-### 1. Install the preservation trigger
+### 1. Set up Kobo
 
 Connect your Kobo and run:
 
 ```bash
-rake kobo:install_trigger
+rake kobo:setup
 ```
 
-This prevents the `AnalyticsEvents` table from being cleared on sync.
+This installs a trigger to prevent the `AnalyticsEvents` table from being cleared on sync, and verifies that analytics tracking is enabled on the device.
 
 ### 2. Configure BookLore connection
 
@@ -91,6 +106,7 @@ When installed, the workflow is simply:
 
 ```
 rake kobo:check            # Check if Kobo is mounted
+rake kobo:setup            # Set up Kobo for syncing (install trigger, check analytics)
 rake kobo:install_trigger  # Install trigger to preserve AnalyticsEvents data
 rake kobo:remove_trigger   # Remove the PreserveAnalyticsEvents trigger
 rake kobo:schema           # Show AnalyticsEvents table schema

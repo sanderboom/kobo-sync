@@ -291,10 +291,16 @@ namespace :sync do
 
         open_attrs = JSON.parse(open_event["Attributes"])
 
+        title = kobo_db.get_first_value(
+          "SELECT Title FROM content WHERE ContentID = ? AND ContentType = 6",
+          volumeid
+        )
+
         sessions << {
           open_event_id: open_event["Id"],
           leave_event_id: event["Id"],
           book_id: volumeid.to_i,
+          book_title: title || "Unknown",
           start_time: open_event["Timestamp"],
           end_time: event["Timestamp"],
           duration_seconds: metrics["SecondsRead"] || 0,
@@ -313,7 +319,7 @@ namespace :sync do
       puts "=== Reading Sessions to Sync (#{sessions.size}) ==="
       sessions.each do |s|
         progress_delta = s[:end_progress] - s[:start_progress]
-        puts "  Book ID: #{s[:book_id]}"
+        puts "  \"#{s[:book_title]}\""
         puts "    Time: #{s[:start_time]} → #{s[:end_time]}"
         puts "    Duration: #{s[:duration_seconds]}s (#{(s[:duration_seconds] / 60.0).round(1)} min)"
         puts "    Progress: #{s[:start_progress]}% → #{s[:end_progress]}% (#{progress_delta >= 0 ? '+' : ''}#{progress_delta.round(1)}%)"
@@ -393,10 +399,17 @@ namespace :sync do
 
         open_attrs = JSON.parse(open_event["Attributes"])
 
+        title = kobo_db.get_first_value(
+          "SELECT Title FROM content WHERE ContentID = ? AND ContentType = 6",
+          volumeid
+        )
+
         sessions << {
           open_event_id: open_event["Id"],
           leave_event_id: event["Id"],
+          volume_id: volumeid,
           book_id: volumeid.to_i,
+          book_title: title || "Unknown",
           start_time: open_event["Timestamp"],
           end_time: event["Timestamp"],
           duration_seconds: metrics["SecondsRead"] || 0,
@@ -446,6 +459,13 @@ namespace :sync do
             [s[:open_event_id], s[:leave_event_id], s[:book_id], Time.now.utc.iso8601]
           )
           puts "  ✓ Book #{s[:book_id]}: #{s[:duration_seconds]}s synced"
+        elsif response.code == "404"
+          # Book not in BookLore — mark as synced so we don't retry
+          sdb.execute(
+            "INSERT INTO synced_sessions (open_event_id, leave_event_id, book_id, synced_at) VALUES (?, ?, ?, ?)",
+            [s[:open_event_id], s[:leave_event_id], s[:book_id], Time.now.utc.iso8601]
+          )
+          puts "  ⊘ \"#{s[:book_title]}\" skipped (not in BookLore)"
         else
           puts "  ✗ Book #{s[:book_id]}: Failed (#{response.code}): #{response.body}"
         end
@@ -582,6 +602,51 @@ namespace :automation do
       puts File.read(log_file)
     else
       puts "No logs yet"
+    end
+  end
+end
+
+namespace :kobo do
+  desc "Set up Kobo for syncing (install trigger, check analytics)"
+  task :setup do
+    require_kobo!
+
+    db = SQLite3::Database.new(KOBO_DB)
+
+    # 1. Install preservation trigger
+    existing = db.get_first_value(
+      "SELECT name FROM sqlite_master WHERE type='trigger' AND name='PreserveAnalyticsEvents'"
+    )
+
+    if existing
+      puts "✓ Trigger 'PreserveAnalyticsEvents' already installed"
+    else
+      puts "Installing trigger to preserve AnalyticsEvents..."
+      db.execute <<~SQL
+        CREATE TRIGGER PreserveAnalyticsEvents
+        BEFORE DELETE ON AnalyticsEvents
+        BEGIN
+            SELECT RAISE(IGNORE);
+        END;
+      SQL
+      puts "✓ Trigger installed successfully"
+    end
+
+    db.close
+
+    # 2. Check if analytics will be gathered
+    user_db = SQLite3::Database.new(KOBO_DB)
+    privacy = user_db.get_first_value("SELECT PrivacyPermissions FROM user")
+    user_db.close
+
+    if privacy && !privacy.empty?
+      puts "✓ Analytics enabled (PrivacyPermissions is set)"
+    else
+      puts "✗ Analytics disabled (PrivacyPermissions is empty)"
+      puts "  No reading events will be recorded."
+      puts "  Temporarily set api_endpoint to https://storeapi.kobo.com,"
+      puts "  sync with Kobo's servers, accept the privacy consent,"
+      puts "  then restore the BookLore endpoint."
     end
   end
 end
