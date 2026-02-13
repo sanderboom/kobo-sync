@@ -1,6 +1,6 @@
 # Kobo Sync for BookLore
 
-Sync reading sessions from your Kobo e-reader to BookLore.
+Sync reading sessions from your Kobo e-reader to [BookLore](https://booklore.org/).
 
 ## The Problem
 
