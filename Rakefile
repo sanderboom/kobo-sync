@@ -34,6 +34,12 @@ def state_db
       synced_at TEXT
     )
   SQL
+  # Add fallback column if missing (migration)
+  columns = db.execute("PRAGMA table_info(synced_sessions)").map { |c| c[1] }
+  unless columns.include?("fallback")
+    db.execute("ALTER TABLE synced_sessions ADD COLUMN fallback INTEGER DEFAULT 0")
+  end
+
   db.execute <<~SQL
     CREATE TABLE IF NOT EXISTS config (
       key TEXT PRIMARY KEY,
@@ -199,39 +205,52 @@ namespace :booklore do
   task :configure do
     sdb = state_db
 
-    # Try to read URL from Kobo config
+    current_url = get_config(sdb, "booklore_url")
+    current_username = get_config(sdb, "username")
+    current_password = get_config(sdb, "password")
+
+    # Try to detect URL from Kobo config if no current value
+    detected_url = nil
     if kobo_mounted?
       kobo_url = read_kobo_sync_url
       parsed = parse_kobo_sync_url(kobo_url)
-      if parsed
-        puts "Detected BookLore URL from Kobo: #{parsed[:base_url]}"
-        print "Use this URL? [Y/n]: "
-        answer = $stdin.gets.chomp.downcase
-        if answer.empty? || answer == "y"
-          set_config(sdb, "booklore_url", parsed[:base_url])
-        else
-          print "BookLore URL (e.g., https://booklore.example.com): "
-          set_config(sdb, "booklore_url", $stdin.gets.chomp)
-        end
-      else
-        print "BookLore URL (e.g., https://booklore.example.com): "
-        set_config(sdb, "booklore_url", $stdin.gets.chomp)
-      end
+      detected_url = parsed[:base_url] if parsed
+    end
+
+    default_url = current_url || detected_url
+    if default_url
+      print "BookLore URL [#{default_url}]: "
+      url_input = $stdin.gets.chomp
+      set_config(sdb, "booklore_url", url_input.empty? ? default_url : url_input)
     else
       print "BookLore URL (e.g., https://booklore.example.com): "
       set_config(sdb, "booklore_url", $stdin.gets.chomp)
     end
 
-    print "Username: "
-    username = $stdin.gets.chomp
-    set_config(sdb, "username", username)
+    print "Username#{current_username ? " [#{current_username}]" : ""}: "
+    username_input = $stdin.gets.chomp
+    set_config(sdb, "username", username_input.empty? && current_username ? current_username : username_input)
 
-    print "Password: "
+    print "Password#{current_password ? " [unchanged]" : ""}: "
     system("stty -echo")
-    password = $stdin.gets.chomp
+    password_input = $stdin.gets.chomp
     system("stty echo")
     puts
-    set_config(sdb, "password", password)
+    set_config(sdb, "password", password_input.empty? && current_password ? current_password : password_input)
+
+    current_min = get_config(sdb, "min_session_seconds") || "60"
+    print "Minimum session duration in seconds [#{current_min}]: "
+    min_input = $stdin.gets.chomp
+    set_config(sdb, "min_session_seconds", min_input.empty? ? current_min : min_input)
+
+    current_default_book = get_config(sdb, "default_book_id")
+    print "Default book ID for unknown books#{current_default_book ? " [#{current_default_book}]" : " (leave blank to skip)"}: "
+    book_input = $stdin.gets.chomp
+    if book_input.empty?
+      set_config(sdb, "default_book_id", current_default_book) if current_default_book
+    else
+      set_config(sdb, "default_book_id", book_input)
+    end
 
     puts "✓ Configuration saved to #{STATE_DB}"
     sdb.close
@@ -244,9 +263,14 @@ namespace :booklore do
     username = get_config(sdb, "username")
     password = get_config(sdb, "password")
 
+    min_session = get_config(sdb, "min_session_seconds")
+    default_book = get_config(sdb, "default_book_id")
+
     puts "BookLore URL: #{url || '(not set)'}"
     puts "Username: #{username || '(not set)'}"
     puts "Password: #{password ? '(set)' : '(not set)'}"
+    puts "Min session seconds: #{min_session || '60 (default)'}"
+    puts "Default book ID: #{default_book || '(not set)'}"
     sdb.close
   end
 end
@@ -259,6 +283,7 @@ namespace :sync do
     kobo_db = SQLite3::Database.new(KOBO_DB)
     kobo_db.results_as_hash = true
     sdb = state_db
+    min_seconds = (get_config(sdb, "min_session_seconds") || "60").to_i
 
     events = kobo_db.execute(<<~SQL)
       SELECT Id, Type, Timestamp, Attributes, Metrics
@@ -313,6 +338,9 @@ namespace :sync do
       end
     end
 
+    skipped = sessions.count { |s| s[:duration_seconds] < min_seconds }
+    sessions.reject! { |s| s[:duration_seconds] < min_seconds }
+
     if sessions.empty?
       puts "No new reading sessions to sync"
     else
@@ -327,6 +355,8 @@ namespace :sync do
         puts
       end
     end
+
+    puts "Skipped #{skipped} short session(s) (< #{min_seconds}s)" if skipped > 0
 
     kobo_db.close
     sdb.close
@@ -344,6 +374,9 @@ namespace :sync do
     unless url && username && password
       abort "Error: BookLore not configured. Run: rake booklore:configure"
     end
+
+    min_seconds = (get_config(sdb, "min_session_seconds") || "60").to_i
+    default_book_id = get_config(sdb, "default_book_id")
 
     kobo_db = SQLite3::Database.new(KOBO_DB)
     kobo_db.results_as_hash = true
@@ -421,6 +454,10 @@ namespace :sync do
       end
     end
 
+    skipped = sessions.count { |s| s[:duration_seconds] < min_seconds }
+    sessions.reject! { |s| s[:duration_seconds] < min_seconds }
+    puts "Skipped #{skipped} short session(s) (< #{min_seconds}s)" if skipped > 0
+
     if sessions.empty?
       puts "No new reading sessions to sync"
     else
@@ -460,12 +497,32 @@ namespace :sync do
           )
           puts "  ✓ Book #{s[:book_id]}: #{s[:duration_seconds]}s synced"
         elsif response.code == "404"
-          # Book not in BookLore — mark as synced so we don't retry
-          sdb.execute(
-            "INSERT INTO synced_sessions (open_event_id, leave_event_id, book_id, synced_at) VALUES (?, ?, ?, ?)",
-            [s[:open_event_id], s[:leave_event_id], s[:book_id], Time.now.utc.iso8601]
-          )
-          puts "  ⊘ \"#{s[:book_title]}\" skipped (not in BookLore)"
+          if default_book_id
+            # Retry with default book
+            payload[:bookId] = default_book_id.to_i
+            request2 = Net::HTTP::Post.new(api_uri)
+            request2["Content-Type"] = "application/json"
+            request2["Authorization"] = "Bearer #{token}"
+            request2.body = payload.to_json
+
+            retry_response = api_http.request(request2)
+            if retry_response.is_a?(Net::HTTPSuccess)
+              sdb.execute(
+                "INSERT INTO synced_sessions (open_event_id, leave_event_id, book_id, synced_at, fallback) VALUES (?, ?, ?, ?, 1)",
+                [s[:open_event_id], s[:leave_event_id], s[:book_id], Time.now.utc.iso8601]
+              )
+              puts "  ✓ \"#{s[:book_title]}\" → default book #{default_book_id}: #{s[:duration_seconds]}s synced"
+            else
+              puts "  ✗ \"#{s[:book_title]}\" → default book #{default_book_id}: Failed (#{retry_response.code})"
+            end
+          else
+            # No default book — mark as synced so we don't retry
+            sdb.execute(
+              "INSERT INTO synced_sessions (open_event_id, leave_event_id, book_id, synced_at, fallback) VALUES (?, ?, ?, ?, 1)",
+              [s[:open_event_id], s[:leave_event_id], s[:book_id], Time.now.utc.iso8601]
+            )
+            puts "  ⊘ \"#{s[:book_title]}\" skipped (not in BookLore)"
+          end
         else
           puts "  ✗ Book #{s[:book_id]}: Failed (#{response.code}): #{response.body}"
         end
@@ -483,6 +540,15 @@ namespace :sync do
     count = sdb.get_first_value("SELECT COUNT(*) FROM synced_sessions")
     sdb.execute("DELETE FROM synced_sessions")
     puts "✓ Reset #{count} synced session(s)"
+    sdb.close
+  end
+
+  desc "Reset unknown/fallback sessions so they sync again"
+  task :reset_unknowns do
+    sdb = state_db
+    count = sdb.get_first_value("SELECT COUNT(*) FROM synced_sessions WHERE fallback = 1")
+    sdb.execute("DELETE FROM synced_sessions WHERE fallback = 1")
+    puts "✓ Reset #{count} fallback session(s) — will re-sync on next run"
     sdb.close
   end
 
