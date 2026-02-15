@@ -498,12 +498,17 @@ namespace :sync do
           puts "  ✓ Book #{s[:book_id]}: #{s[:duration_seconds]}s synced"
         elsif response.code == "404"
           if default_book_id
-            # Retry with default book
-            payload[:bookId] = default_book_id.to_i
+            # Retry with default book, zero out progress to avoid marking it as completed
+            fallback_payload = payload.merge(
+              bookId: default_book_id.to_i,
+              startProgress: 0,
+              endProgress: 0,
+              progressDelta: 0
+            )
             request2 = Net::HTTP::Post.new(api_uri)
             request2["Content-Type"] = "application/json"
             request2["Authorization"] = "Bearer #{token}"
-            request2.body = payload.to_json
+            request2.body = fallback_payload.to_json
 
             retry_response = api_http.request(request2)
             if retry_response.is_a?(Net::HTTPSuccess)
