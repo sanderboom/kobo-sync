@@ -547,8 +547,25 @@ namespace :sync do
   task :reset_unknowns do
     sdb = state_db
     count = sdb.get_first_value("SELECT COUNT(*) FROM synced_sessions WHERE fallback = 1")
-    sdb.execute("DELETE FROM synced_sessions WHERE fallback = 1")
-    puts "✓ Reset #{count} fallback session(s) — will re-sync on next run"
+
+    if count == 0
+      puts "No fallback sessions to reset"
+      sdb.close
+      next
+    end
+
+    puts "This will reset #{count} fallback session(s)."
+    puts "To avoid duplicates, delete the catch-all book in BookLore first, then re-upload it."
+    print "Continue? [y/N]: "
+    answer = $stdin.gets.chomp.downcase
+
+    if answer == "y"
+      sdb.execute("DELETE FROM synced_sessions WHERE fallback = 1")
+      puts "✓ Reset #{count} fallback session(s) — will re-sync on next run"
+    else
+      puts "Aborted"
+    end
+
     sdb.close
   end
 
