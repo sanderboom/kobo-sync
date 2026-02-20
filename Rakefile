@@ -639,7 +639,7 @@ namespace :kobo do
     privacy = user_db.get_first_value("SELECT PrivacyPermissions FROM user")
     user_db.close
 
-    if privacy && !privacy.empty?
+    if privacy && privacy.bytesize > 4
       puts "✓ Analytics enabled (PrivacyPermissions is set)"
     else
       puts "✗ Analytics disabled (PrivacyPermissions is empty)"
