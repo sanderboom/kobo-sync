@@ -1,10 +1,11 @@
 # Kobo Sync for BookLore
 
-Sync reading sessions from your Kobo e-reader to [BookLore](https://booklore.org/).
+Sync reading sessions from your Kobo e-reader to your [BookLore](https://booklore.org/) instance.
 
 ## The Problem
 
-Kobo tracks reading sessions in its `AnalyticsEvents` table, but this data gets **wiped every time the device syncs online**. This tool:
+Kobo tracks reading sessions in its `AnalyticsEvents` table, but this data gets **wiped every time the device syncs online**.  
+This tool:
 
 1. Installs a trigger to preserve the data
 2. Extracts reading sessions (pairing OpenContent/LeaveContent events)
@@ -16,34 +17,46 @@ Kobo tracks reading sessions in its `AnalyticsEvents` table, but this data gets 
 bundle install
 ```
 
-## Prerequisites
+## First time setup
 
-### Analytics must be enabled on the Kobo
+### 1. Analytics must be enabled on the Kobo
 
-The Kobo only generates `OpenContent`/`LeaveContent` events when analytics tracking is enabled. The `PrivacyPermissions` field in the Kobo's database must be populated — if it's empty, no reading events will be recorded.
+The `PrivacyPermissions` field in the user-table of the Kobo database (at `.kobo/KoboReader.sqlite`) must be populated — if it's empty, no reading events will be recorded.
 
-This is typically set during initial device setup via Kobo's servers. If you set up your Kobo with a custom `api_endpoint` (e.g. pointing to BookLore), the privacy consent flow may have been skipped. To fix this:
+It's a bit unclear what exactly causes the analytics tracking to not be enabled, but after several reset-setup-flows the following worked:
 
-1. Connect your Kobo via USB
-2. In `.kobo/Kobo/Kobo eReader.conf`, temporarily set `api_endpoint=https://storeapi.kobo.com`
-3. Eject the Kobo, let it sync with Kobo's servers, and accept the privacy/analytics consent
-4. Reconnect via USB and restore the BookLore `api_endpoint`
+1. Visit https://www.kobo.com/ and _be sure to accept all cookies_  
+2. Create an account  
+  Be sure to pick the country where you'd want to buy content from. This can differ from the country the site detects.
+1. Reset the Kobo  
+  This starts the activation flow. It can be done by signing out (`More > Settings > Accounts`).  
+  NOTE: notes and bookmarks are lost.
+1. Activate  
+  You'll be asked to connect wifi. Then you'll be shown a page with a QR-code and activation code.  
+  Visit https://kobo.com/activate and fill out the activation code. This ties the device to the online account.
+1. Connect your Kobo to your computer  
+  Confirm connecting on the device.
+1. Verify analytics are enabled  
+  The following installs a trigger to prevent the `AnalyticsEvents` table from being cleared on sync, and verifies that analytics tracking is enabled on the device.
+   ```bash
+   rake kobo:setup
+   ```
 
-Note: if you factory reset or sign out of the device, you'll need to repeat this.
+### 2. Config the api endpoint on the Kobo
 
-## First-Time Setup
+This is how you receive your books from your BookLore instance - it's not strictly necessary for syncing the analytics data.  
+NOTE: Setting this doesn't prevent you from buying books from the official Kobo store (or using Kobo plus).
 
-### 1. Set up Kobo
+1. BookLore: Grab your Kobo sync token  
+  On your Booklore instance: Visit `Settings > Devices`, ensure `Enable Kobo Sync` is enabled and copy the token.
+1. Kobo: Set the api_endpoint  
+  In `.kobo/Kobo/Kobo eReader.conf`, set `api_endpoint=https://booklore-instance.org/api/kobo/<token>`.  
+  On OSX:
+    ```bash
+    $EDITOR /Volumes/KOBOeReader/.kobo/Kobo/Kobo\ eReader.conf
+    ```
 
-Connect your Kobo and run:
-
-```bash
-rake kobo:setup
-```
-
-This installs a trigger to prevent the `AnalyticsEvents` table from being cleared on sync, and verifies that analytics tracking is enabled on the device.
-
-### 2. Configure BookLore connection
+### 3. Configure BookLore connection
 
 ```bash
 rake booklore:configure
@@ -51,13 +64,14 @@ rake booklore:configure
 
 Enter your BookLore URL, username, and password. Credentials are stored in `~/.kobo-sync/state.db`.
 
-### 3. Install automatic sync (recommended)
+### 4. Install automatic sync (recommended)
 
 ```bash
 rake automation:install
 ```
 
-This installs a launchd agent that automatically syncs when you mount your Kobo. You'll get a macOS notification when sync completes.
+This installs a launchd agent that automatically syncs when you mount your Kobo. You'll get a macOS notification when sync completes.  
+See Usage below for manual sync.
 
 ## Usage
 
