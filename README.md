@@ -56,7 +56,7 @@ NOTE: Setting this doesn't prevent you from buying books from the official Kobo 
     $EDITOR /Volumes/KOBOeReader/.kobo/Kobo/Kobo\ eReader.conf
     ```
 
-### 3. Configure BookLore connection
+### 3. Configure Grimmory connection
 
 ```bash
 rake grimmory:configure
@@ -111,12 +111,12 @@ When installed, the workflow is simply:
 
 ## Unknown Books & Instapaper Articles
 
-Reading sessions for books not found in BookLore (404) are handled with a fallback mechanism. This includes Instapaper articles synced to your Kobo, which generate reading events but aren't in your BookLore library.
+Reading sessions for books not found in Grimmory (404) are handled with a fallback mechanism. This includes Instapaper articles synced to your Kobo, which generate reading events but aren't in your Grimmory library.
 
 ### Setup
 
-1. Upload `support/uncategorized-reading.epub` to BookLore and note its book ID
-2. Run `rake booklore:configure` and set the **Default book ID** to that ID
+1. Upload [`support/uncategorized-reading.epub`](support/uncategorized-reading.epub) to Grimmory and note its book ID
+2. Run `rake grimmory:configure` and set the **Default book ID** to that ID
 
 Sessions that would otherwise be lost now get assigned to this catch-all book. They're marked as fallback sessions internally.
 
@@ -124,15 +124,15 @@ Sessions that would otherwise be lost now get assigned to this catch-all book. T
 
 If you need to delete and re-upload the catch-all book (e.g. to change the cover):
 
-1. Delete the old book in BookLore
+1. Delete the old book in Grimmory
 2. Upload the new EPUB, note the new book ID
-3. Run `rake booklore:configure` and update the default book ID
+3. Run `rake grimmory:configure` and update the default book ID
 4. Run `rake sync:reset_unknowns` to clear fallback sessions
 5. Run `rake sync:run` to re-sync them to the new book
 
 ### Short sessions
 
-Sessions shorter than `min_session_seconds` (default: 60) are filtered out in both `sync:preview` and `sync:run` to skip accidental book opens. Configure via `rake booklore:configure`.
+Sessions shorter than `min_session_seconds` (default: 60) are filtered out in both `sync:preview` and `sync:run` to skip accidental book opens. Configure via `rake grimmory:configure`.
 
 ## How Idempotency Works
 
