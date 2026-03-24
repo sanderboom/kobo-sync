@@ -1,6 +1,6 @@
-# Kobo Sync for BookLore
+# Kobo Sync for Grimmory (formerly Booklore)
 
-Sync reading sessions from your Kobo e-reader to your [BookLore](https://booklore.org/) instance.
+Sync reading sessions from your Kobo e-reader to your [Grimmory](https://github.com/grimmory-tools/grimmory) instance.
 
 ## The Problem
 
@@ -9,7 +9,7 @@ This tool:
 
 1. Installs a trigger to preserve the data
 2. Extracts reading sessions (pairing OpenContent/LeaveContent events)
-3. Syncs them to BookLore's `/api/v1/reading-sessions` endpoint
+3. Syncs them to Grimmory's `/api/v1/reading-sessions` endpoint
 
 ## Setup
 
@@ -44,13 +44,13 @@ It's a bit unclear what exactly causes the analytics tracking to not be enabled,
 
 ### 2. Config the api endpoint on the Kobo
 
-This is how you receive your books from your BookLore instance - it's not strictly necessary for syncing the analytics data.  
+This is how you receive your books from your Grimmory instance - it's not strictly necessary for syncing the analytics data.  
 NOTE: Setting this doesn't prevent you from buying books from the official Kobo store (or using Kobo plus).
 
-1. BookLore: Grab your Kobo sync token  
-  On your Booklore instance: Visit `Settings > Devices`, ensure `Enable Kobo Sync` is enabled and copy the token.
+1. Grimmory: Grab your Kobo sync token  
+  On your Grimmory instance: Visit `Settings > Devices`, ensure `Enable Kobo Sync` is enabled and copy the token.
 1. Kobo: Set the api_endpoint  
-  In `.kobo/Kobo/Kobo eReader.conf`, set `api_endpoint=https://booklore-instance.org/api/kobo/<token>`.  
+  In `.kobo/Kobo/Kobo eReader.conf`, set `api_endpoint=https://grimmory-instance.org/api/kobo/<token>`.  
   On OSX:
     ```bash
     $EDITOR /Volumes/KOBOeReader/.kobo/Kobo/Kobo\ eReader.conf
@@ -59,10 +59,10 @@ NOTE: Setting this doesn't prevent you from buying books from the official Kobo 
 ### 3. Configure BookLore connection
 
 ```bash
-rake booklore:configure
+rake grimmory:configure
 ```
 
-Enter your BookLore URL, username, and password. Credentials are stored in `~/.kobo-sync/state.db`.
+Enter your Grimmory URL, username, and password. Credentials are stored in `~/.kobo-sync/state.db`.
 
 ### 4. Install automatic sync (recommended)
 
@@ -126,11 +126,11 @@ rake kobo:remove_trigger   # Remove the PreserveAnalyticsEvents trigger
 rake kobo:schema           # Show AnalyticsEvents table schema
 rake kobo:triggers         # Show installed triggers
 
-rake booklore:configure    # Configure BookLore API connection
-rake booklore:config       # Show current configuration
+rake grimmory:configure    # Configure Grimmory API connection
+rake grimmory:config       # Show current configuration
 
 rake sync:preview          # Show reading sessions that would be synced (dry run)
-rake sync:run              # Sync reading sessions to BookLore
+rake sync:run              # Sync reading sessions to Grimmory
 rake sync:stats            # Show sync statistics
 rake sync:reset            # Reset sync state (mark all sessions as not synced)
 
