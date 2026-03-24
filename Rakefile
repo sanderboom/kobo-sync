@@ -200,8 +200,8 @@ namespace :kobo do
   end
 end
 
-namespace :booklore do
-  desc "Configure BookLore API connection"
+namespace :grimmory do
+  desc "Configure Grimmory API connection"
   task :configure do
     sdb = state_db
 
@@ -219,11 +219,11 @@ namespace :booklore do
 
     default_url = current_url || detected_url
     if default_url
-      print "BookLore URL [#{default_url}]: "
+      print "Grimmory URL [#{default_url}]: "
       url_input = $stdin.gets.chomp
       set_config(sdb, "booklore_url", url_input.empty? ? default_url : url_input)
     else
-      print "BookLore URL (e.g., https://booklore.example.com): "
+      print "Grimmory URL (e.g., https://grimmory.example.com): "
       set_config(sdb, "booklore_url", $stdin.gets.chomp)
     end
 
@@ -266,7 +266,7 @@ namespace :booklore do
     min_session = get_config(sdb, "min_session_seconds")
     default_book = get_config(sdb, "default_book_id")
 
-    puts "BookLore URL: #{url || '(not set)'}"
+    puts "Grimmory URL: #{url || '(not set)'}"
     puts "Username: #{username || '(not set)'}"
     puts "Password: #{password ? '(set)' : '(not set)'}"
     puts "Min session seconds: #{min_session || '60 (default)'}"
@@ -362,7 +362,7 @@ namespace :sync do
     sdb.close
   end
 
-  desc "Sync reading sessions to BookLore"
+  desc "Sync reading sessions to Grimmory"
   task :run do
     require_kobo!
 
@@ -372,7 +372,7 @@ namespace :sync do
     password = get_config(sdb, "password")
 
     unless url && username && password
-      abort "Error: BookLore not configured. Run: rake booklore:configure"
+      abort "Error: Grimmory not configured. Run: rake grimmory:configure"
     end
 
     min_seconds = (get_config(sdb, "min_session_seconds") || "60").to_i
@@ -382,7 +382,7 @@ namespace :sync do
     kobo_db.results_as_hash = true
 
     # Get JWT token
-    puts "Authenticating with BookLore..."
+    puts "Authenticating with Grimmory..."
     auth_uri = URI("#{url}/api/v1/auth/login")
     http = Net::HTTP.new(auth_uri.host, auth_uri.port)
     http.use_ssl = auth_uri.scheme == "https"
@@ -526,7 +526,7 @@ namespace :sync do
               "INSERT INTO synced_sessions (open_event_id, leave_event_id, book_id, synced_at, fallback) VALUES (?, ?, ?, ?, 1)",
               [s[:open_event_id], s[:leave_event_id], s[:book_id], Time.now.utc.iso8601]
             )
-            puts "  ⊘ \"#{s[:book_title]}\" skipped (not in BookLore)"
+            puts "  ⊘ \"#{s[:book_title]}\" skipped (not in Grimmory)"
           end
         else
           puts "  ✗ Book #{s[:book_id]}: Failed (#{response.code}): #{response.body}"
@@ -560,7 +560,7 @@ namespace :sync do
     end
 
     puts "This will reset #{count} fallback session(s)."
-    puts "To avoid duplicates, delete the catch-all book in BookLore first, then re-upload it."
+    puts "To avoid duplicates, delete the catch-all book in Grimmory first, then re-upload it."
     print "Continue? [y/N]: "
     answer = $stdin.gets.chomp.downcase
 
@@ -612,7 +612,7 @@ namespace :automation do
     sdb.close
 
     unless url && username
-      abort "Error: Configure BookLore first: rake booklore:configure"
+      abort "Error: Configure Grimmory first: rake grimmory:configure"
     end
 
     FileUtils.mkdir_p(STATE_DIR)
@@ -734,7 +734,7 @@ namespace :kobo do
       puts "  No reading events will be recorded."
       puts "  Temporarily set api_endpoint to https://storeapi.kobo.com,"
       puts "  sync with Kobo's servers, accept the privacy consent,"
-      puts "  then restore the BookLore endpoint."
+      puts "  then restore the Grimmory endpoint."
     end
   end
 end
