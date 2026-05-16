@@ -39,6 +39,9 @@ def state_db
   unless columns.include?("fallback")
     db.execute("ALTER TABLE synced_sessions ADD COLUMN fallback INTEGER DEFAULT 0")
   end
+  # Dedup is keyed on leave_event_id (open_event_id is NULL for orphan
+  # LeaveContent sessions; SQLite permits multiple NULLs in a TEXT PRIMARY KEY).
+  db.execute("CREATE INDEX IF NOT EXISTS idx_synced_leave_event ON synced_sessions(leave_event_id)")
 
   db.execute <<~SQL
     CREATE TABLE IF NOT EXISTS config (
@@ -73,6 +76,105 @@ def parse_kobo_sync_url(url)
   if url =~ %r{(https?://[^/]+)/api/kobo/([^/\s]+)}
     { base_url: $1, token: $2 }
   end
+end
+
+# Extract new (not-yet-synced, >= min_seconds) reading sessions from the Kobo.
+#
+# A reading session is driven by the LeaveContent event: it alone carries the
+# substance (SecondsRead, PagesTurned, end progress/location). The matching
+# OpenContent's Metrics are empty `{}` — it only adds start-side detail. So we
+# emit a session for every LeaveContent and treat a preceding OpenContent as
+# optional enrichment. When there is no OpenContent (e.g. the reader resumed
+# from standby without a fresh open event), we derive the start from the leave
+# event itself instead of silently dropping a real session.
+#
+# Dedup key is leave_event_id (the canonical end-of-session record, always
+# present). Rows synced under the old scheme also stored leave_event_id, so
+# this stays backward-compatible.
+def extract_new_sessions(kobo_db, sdb, min_seconds)
+  events = kobo_db.execute(<<~SQL)
+    SELECT Id, Type, Timestamp, Attributes, Metrics
+    FROM AnalyticsEvents
+    WHERE Type IN ('OpenContent', 'LeaveContent')
+    ORDER BY Timestamp ASC
+  SQL
+
+  sessions = []
+  open_events = {}
+
+  events.each do |event|
+    attrs = JSON.parse(event["Attributes"]) rescue {}
+    metrics = JSON.parse(event["Metrics"]) rescue {}
+    volumeid = attrs["volumeid"]
+    next unless volumeid
+
+    if event["Type"] == "OpenContent"
+      # Remember the most recent open for this book; only used to enrich the
+      # matching LeaveContent below.
+      open_events[volumeid] = event
+      next
+    end
+
+    # LeaveContent: the authoritative session record.
+    leave_event_id = event["Id"]
+
+    already_synced = sdb.get_first_value(
+      "SELECT 1 FROM synced_sessions WHERE leave_event_id = ?",
+      leave_event_id
+    )
+    next if already_synced
+
+    duration_seconds = metrics["SecondsRead"] || 0
+    end_time = event["Timestamp"]
+    end_progress = attrs["progress"].to_f
+    end_location = "#{attrs['StartFile']}##{attrs['StartSpan']}"
+
+    open_event = open_events.delete(volumeid)
+    if open_event
+      open_attrs = JSON.parse(open_event["Attributes"]) rescue {}
+      open_event_id = open_event["Id"]
+      start_time = open_event["Timestamp"]
+      start_progress = open_attrs["progress"].to_f
+      start_location = "#{open_attrs['StartFile']}##{open_attrs['StartSpan']}"
+    else
+      # Orphan LeaveContent: derive start from the leave event. SecondsRead is
+      # active reading time; with Kobo's small IdleTime this closely tracks the
+      # real start and is accurate enough for day attribution / streaks.
+      # Start-side progress/location are unknown, so mirror the end values with
+      # a zero delta — conservative: never falsely advances or completes a book.
+      open_event_id = nil
+      start_time = (Time.parse(end_time).utc - duration_seconds).strftime("%Y-%m-%dT%H:%M:%SZ")
+      start_progress = end_progress
+      start_location = end_location
+    end
+
+    title = kobo_db.get_first_value(
+      "SELECT Title FROM content WHERE ContentID = ? AND ContentType = 6",
+      volumeid
+    )
+
+    sessions << {
+      open_event_id: open_event_id,
+      leave_event_id: leave_event_id,
+      volume_id: volumeid,
+      book_id: volumeid.to_i,
+      book_title: title || "Unknown",
+      start_time: start_time,
+      end_time: end_time,
+      duration_seconds: duration_seconds,
+      start_progress: start_progress,
+      end_progress: end_progress,
+      progress_delta: end_progress - start_progress,
+      start_location: start_location,
+      end_location: end_location,
+      pages_turned: metrics["PagesTurned"] || 0,
+      orphan: open_event.nil?
+    }
+  end
+
+  skipped = sessions.count { |s| s[:duration_seconds] < min_seconds }
+  sessions.reject! { |s| s[:duration_seconds] < min_seconds }
+  [sessions, skipped]
 end
 
 namespace :kobo do
@@ -285,72 +387,17 @@ namespace :sync do
     sdb = state_db
     min_seconds = (get_config(sdb, "min_session_seconds") || "60").to_i
 
-    events = kobo_db.execute(<<~SQL)
-      SELECT Id, Type, Timestamp, Attributes, Metrics
-      FROM AnalyticsEvents
-      WHERE Type IN ('OpenContent', 'LeaveContent')
-      ORDER BY Timestamp ASC
-    SQL
-
-    sessions = []
-    open_events = {}
-
-    events.each do |event|
-      attrs = JSON.parse(event["Attributes"])
-      metrics = JSON.parse(event["Metrics"]) rescue {}
-      volumeid = attrs["volumeid"]
-
-      next unless volumeid
-
-      if event["Type"] == "OpenContent"
-        open_events[volumeid] = event
-      elsif event["Type"] == "LeaveContent" && open_events[volumeid]
-        open_event = open_events.delete(volumeid)
-
-        already_synced = sdb.get_first_value(
-          "SELECT 1 FROM synced_sessions WHERE open_event_id = ?",
-          open_event["Id"]
-        )
-
-        next if already_synced
-
-        open_attrs = JSON.parse(open_event["Attributes"])
-
-        title = kobo_db.get_first_value(
-          "SELECT Title FROM content WHERE ContentID = ? AND ContentType = 6",
-          volumeid
-        )
-
-        sessions << {
-          open_event_id: open_event["Id"],
-          leave_event_id: event["Id"],
-          book_id: volumeid.to_i,
-          book_title: title || "Unknown",
-          start_time: open_event["Timestamp"],
-          end_time: event["Timestamp"],
-          duration_seconds: metrics["SecondsRead"] || 0,
-          start_progress: open_attrs["progress"].to_f,
-          end_progress: attrs["progress"].to_f,
-          start_location: "#{open_attrs['StartFile']}##{open_attrs['StartSpan']}",
-          end_location: "#{attrs['StartFile']}##{attrs['StartSpan']}",
-          pages_turned: metrics["PagesTurned"] || 0
-        }
-      end
-    end
-
-    skipped = sessions.count { |s| s[:duration_seconds] < min_seconds }
-    sessions.reject! { |s| s[:duration_seconds] < min_seconds }
+    sessions, skipped = extract_new_sessions(kobo_db, sdb, min_seconds)
 
     if sessions.empty?
       puts "No new reading sessions to sync"
     else
       puts "=== Reading Sessions to Sync (#{sessions.size}) ==="
       sessions.each do |s|
-        progress_delta = s[:end_progress] - s[:start_progress]
-        puts "  \"#{s[:book_title]}\""
+        puts "  \"#{s[:book_title]}\"#{s[:orphan] ? ' (start derived — no open event)' : ''}"
         puts "    Time: #{s[:start_time]} → #{s[:end_time]}"
         puts "    Duration: #{s[:duration_seconds]}s (#{(s[:duration_seconds] / 60.0).round(1)} min)"
-        puts "    Progress: #{s[:start_progress]}% → #{s[:end_progress]}% (#{progress_delta >= 0 ? '+' : ''}#{progress_delta.round(1)}%)"
+        puts "    Progress: #{s[:start_progress]}% → #{s[:end_progress]}% (#{s[:progress_delta] >= 0 ? '+' : ''}#{s[:progress_delta].round(1)}%)"
         puts "    Pages turned: #{s[:pages_turned]}"
         puts
       end
@@ -400,62 +447,7 @@ namespace :sync do
     token = auth_data["accessToken"]
     puts "✓ Authenticated"
 
-    # Get events and pair them
-    events = kobo_db.execute(<<~SQL)
-      SELECT Id, Type, Timestamp, Attributes, Metrics
-      FROM AnalyticsEvents
-      WHERE Type IN ('OpenContent', 'LeaveContent')
-      ORDER BY Timestamp ASC
-    SQL
-
-    sessions = []
-    open_events = {}
-
-    events.each do |event|
-      attrs = JSON.parse(event["Attributes"])
-      metrics = JSON.parse(event["Metrics"]) rescue {}
-      volumeid = attrs["volumeid"]
-
-      next unless volumeid
-
-      if event["Type"] == "OpenContent"
-        open_events[volumeid] = event
-      elsif event["Type"] == "LeaveContent" && open_events[volumeid]
-        open_event = open_events.delete(volumeid)
-
-        already_synced = sdb.get_first_value(
-          "SELECT 1 FROM synced_sessions WHERE open_event_id = ?",
-          open_event["Id"]
-        )
-
-        next if already_synced
-
-        open_attrs = JSON.parse(open_event["Attributes"])
-
-        title = kobo_db.get_first_value(
-          "SELECT Title FROM content WHERE ContentID = ? AND ContentType = 6",
-          volumeid
-        )
-
-        sessions << {
-          open_event_id: open_event["Id"],
-          leave_event_id: event["Id"],
-          volume_id: volumeid,
-          book_id: volumeid.to_i,
-          book_title: title || "Unknown",
-          start_time: open_event["Timestamp"],
-          end_time: event["Timestamp"],
-          duration_seconds: metrics["SecondsRead"] || 0,
-          start_progress: open_attrs["progress"].to_f,
-          end_progress: attrs["progress"].to_f,
-          start_location: "#{open_attrs['StartFile']}##{open_attrs['StartSpan']}",
-          end_location: "#{attrs['StartFile']}##{attrs['StartSpan']}"
-        }
-      end
-    end
-
-    skipped = sessions.count { |s| s[:duration_seconds] < min_seconds }
-    sessions.reject! { |s| s[:duration_seconds] < min_seconds }
+    sessions, skipped = extract_new_sessions(kobo_db, sdb, min_seconds)
     puts "Skipped #{skipped} short session(s) (< #{min_seconds}s)" if skipped > 0
 
     if sessions.empty?
@@ -464,7 +456,7 @@ namespace :sync do
       puts "Syncing #{sessions.size} reading session(s)..."
 
       sessions.each do |s|
-        progress_delta = s[:end_progress] - s[:start_progress]
+        progress_delta = s[:progress_delta]
 
         payload = {
           bookId: s[:book_id],
