@@ -8,7 +8,7 @@ Kobo tracks reading sessions in its `AnalyticsEvents` table, but this data gets 
 This tool:
 
 1. Installs a trigger to preserve the data
-2. Extracts reading sessions (pairing OpenContent/LeaveContent events)
+2. Extracts a reading session from each LeaveContent event (which records the time read)
 3. Syncs them to Grimmory's `/api/v1/reading-sessions` endpoint
 
 ## Setup
@@ -134,10 +134,21 @@ If you need to delete and re-upload the catch-all book (e.g. to change the cover
 
 Sessions shorter than `min_session_seconds` (default: 60) are filtered out in both `sync:preview` and `sync:run` to skip accidental book opens. Configure via `rake grimmory:configure`.
 
+## How Reading Time Is Calculated
+
+Each `LeaveContent` event is one reading session. The time read comes straight from that event's `SecondsRead` metric — it is **not** inferred from the wall-clock gap between opening and leaving a book.
+
+A preceding `OpenContent` event is *optional enrichment* only: when present it supplies the exact start time, start progress and start location. Kobo frequently omits it (e.g. when you resume from standby instead of reopening the book), so it is not required. When there is no `OpenContent`:
+
+- `startTime` is derived as `endTime - SecondsRead` (accurate to ~1s in practice, since Kobo's `IdleTime` is small)
+- start progress/location mirror the end values, with a zero `progressDelta` (conservative — never falsely advances or completes a book)
+
+This keeps those sessions and their reading time instead of discarding them; the only loss is a slightly approximate start time and no start-side progress for sessions Kobo didn't open cleanly.
+
 ## How Idempotency Works
 
 - Local state stored in `~/.kobo-sync/state.db`
-- Tracks which Kobo event IDs have been synced
+- Tracks which `LeaveContent` event IDs have been synced (one per session)
 - Re-running `sync:run` only sends new sessions
 - Use `sync:reset` to clear the sync state if needed
 
@@ -183,10 +194,12 @@ rake automation:logs       # Show automation logs
 ```
 Kobo AnalyticsEvents
     ↓
-    OpenContent event (start reading)
-    LeaveContent event (stop reading, has SecondsRead)
+    LeaveContent event — the session of record
+      (SecondsRead = time read, PagesTurned, end progress/location)
+    OpenContent event — optional, adds exact start time/progress/location
     ↓
-Paired into reading session
+One reading session per LeaveContent
+  (start derived from SecondsRead when no OpenContent precedes it)
     ↓
 POST /api/v1/reading-sessions
     {
