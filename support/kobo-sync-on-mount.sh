@@ -38,6 +38,12 @@ else
   BUNDLE_CMD="bundle"
 fi
 
+# Heal missing gems (e.g. after a Ruby version bump wipes native extensions)
+if ! $BUNDLE_CMD check >> "$LOG_FILE" 2>&1; then
+  echo "$(date): Gems missing, running bundle install..." >> "$LOG_FILE"
+  $BUNDLE_CMD install >> "$LOG_FILE" 2>&1
+fi
+
 if $BUNDLE_CMD exec rake sync:run >> "$LOG_FILE" 2>&1; then
   osascript -e 'display notification "Reading sessions synced to BookLore" with title "Kobo Sync"' 2>/dev/null || true
   echo "$(date): Sync completed successfully" >> "$LOG_FILE"
